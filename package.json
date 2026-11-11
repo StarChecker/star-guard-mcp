@@ -1,0 +1,18 @@
+{
+  "name": "star-guard-mcp",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "MCP server for Star Guard: deterministic suspicious-score interpretation for Claude Code",
+  "main": "src/index.js",
+  "bin": {
+    "star-guard-mcp": "src/index.js"
+  },
+  "scripts": {
+    "start": "node src/index.js",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
