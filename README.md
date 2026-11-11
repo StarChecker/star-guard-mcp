@@ -31,7 +31,6 @@ node src/index.js
 | Переменная | По умолчанию | Назначение |
 |------------|--------------|------------|
 | `STAR_GUARD_API_URL` | `http://localhost:8080` | адрес Star Guard |
-| `STAR_GUARD_DEFAULT_HOURS` | `6` | окно по умолчанию (используется tool-аргументом `hours`) |
 | `STAR_GUARD_SCAN_TIMEOUT_MS` | `60000` | сколько ждать скан репозитория вне индекса |
 | `STAR_GUARD_POLL_INTERVAL_MS` | `1500` | интервал polling статуса скана |
 | `STAR_GUARD_REQUEST_TIMEOUT_MS` | `30000` | таймаут HTTP-запроса к Star Guard |
