@@ -14,6 +14,14 @@ MCP-сервер для **Claude Code**, который проверяет GitHu
 сервисы: трактовка строится по порогам из ответа Star Guard. MCP-сервер общается
 только с Star Guard по `STAR_GUARD_API_URL`.
 
+## Документация
+
+- [docs/mcp.md](docs/mcp.md) — MCP-слой: транспорт, рукопожатие, методы,
+  ошибки, подключение и отладка.
+- [docs/tools.md](docs/tools.md) — инструменты, аргументы и форматы ответов.
+- [docs/architecture.md](docs/architecture.md) — внутреннее устройство и поток
+  `assess_dependency`.
+
 ## Требования
 
 - Node.js **20+** (проверено на Node 24)
