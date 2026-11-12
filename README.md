@@ -56,7 +56,7 @@ STAR_GUARD_API_URL=http://localhost:8080 \
   claude mcp add star-guard-mcp -- node /absolute/path/to/star-guard-mcp/src/index.js
 ```
 
-Пример `.mcp.json`:
+Пример `.mcp.json`: 
 
 ```json
 {
