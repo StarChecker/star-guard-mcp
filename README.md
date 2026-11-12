@@ -120,6 +120,66 @@ STAR_GUARD_API_URL=http://localhost:8080 \
 Категории вычисляются по `level`, а не по свободному тексту; LLM в этом не
 участвует.
 
+## Docker
+
+```bash
+docker build -t star-guard-mcp .
+docker run -i --rm \
+  -e STAR_GUARD_API_URL=http://host.docker.internal:8080 \
+  star-guard-mcp
+```
+
+`-i` обязателен: MCP общается по stdin/stdout. На Linux `localhost` из
+контейнера указывает на сам контейнер; для доступа к хосту добавьте
+`--add-host=host.docker.internal:host-gateway` (или укажите адрес Star Guard
+в сети).
+
+### Публикация в Docker Hub
+
+Workflow [`.github/workflows/docker.yml`](.github/workflows/docker.yml)
+запускает тесты, собирает образ через Buildx и пушит его в Docker Hub:
+
+- push в `main` → `latest`, `sha-<short>`;
+- тег `v*` (например, `v0.1.0`) → `0.1.0`, `0.1`, `sha-<short>`;
+- pull request → только сборка `linux/amd64` без пуша;
+- `workflow_dispatch` → как push в `main`.
+
+Основная сборка multi-arch: `linux/amd64` и `linux/arm64`.
+
+Секреты репозитория (Settings → Secrets and variables → Actions):
+
+| Секрет | Значение |
+|--------|----------|
+| `DOCKERHUB_USERNAME` | логин Docker Hub |
+| `DOCKERHUB_TOKEN` | personal access token с правами Read & Write ([Account settings → Personal access tokens](https://hub.docker.com/settings/security)); пароль не используйте |
+
+Имя образа — `<DOCKERHUB_USERNAME>/star-guard-mcp`. Репозиторий на Docker Hub
+должен быть **публичным**: создайте его заранее (Create repository →
+Visibility: Public) либо после первого push переключите видимость в
+Settings → Visibility. Публичным он делается только этой настройкой — сам по
+себе push видимость не гарантирует.
+
+Использование опубликованного образа:
+
+```bash
+docker pull <dockerhub-user>/star-guard-mcp:latest
+```
+
+```json
+{
+  "mcpServers": {
+    "star-guard-mcp": {
+      "command": "docker",
+      "args": [
+        "run", "-i", "--rm",
+        "-e", "STAR_GUARD_API_URL=http://host.docker.internal:8080",
+        "<dockerhub-user>/star-guard-mcp:latest"
+      ]
+    }
+  }
+}
+```
+
 ## Разработка
 
 ```bash
