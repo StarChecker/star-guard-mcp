@@ -10,6 +10,25 @@ const HOURS = {
   description: 'Окно GH Archive в часах; по умолчанию — настройка сервиса',
 };
 
+const DAYS = {
+  type: 'integer',
+  minimum: 1,
+  maximum: 90,
+  description: 'Окно истории GitHub в днях; сервис может ограничить его app.github.history.max-days',
+};
+
+const SCAN_SOURCE = {
+  type: 'string',
+  enum: ['github', 'archive'],
+  description: 'Источник скана: github — история GitHub (нужен токен), archive — дампы GH Archive; по умолчанию выбирается сервисом',
+};
+
+const MAX_LEVEL = {
+  type: 'string',
+  enum: ['low', 'medium', 'high', 'critical'],
+  description: 'Оставить репозитории с уровнем не выше указанного (включает with_score)',
+};
+
 export const TOOLS = [
   {
     name: 'assess_dependency',
@@ -17,7 +36,8 @@ export const TOOLS = [
       'Проверить GitHub-репозиторий/библиотеку перед использованием. ' +
       'Возвращает score, level и детерминированную трактовку: healthy / borderline / ' +
       'suspicious / critical / insufficient_data, причины и рекомендацию. ' +
-      'Для репозитория вне индекса запускает фоновый скан и ждёт результат.',
+      'Для репозитория вне индекса запускает фоновый скан и ждёт результат. ' +
+      'Если GitHub-источник недоступен, автоматически повторяет проверку по GH Archive.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
@@ -25,6 +45,7 @@ export const TOOLS = [
       properties: {
         ...OWNER_NAME,
         hours: HOURS,
+        days: DAYS,
         wait_for_scan: {
           type: 'boolean',
           default: true,
@@ -46,17 +67,41 @@ export const TOOLS = [
       type: 'object',
       additionalProperties: false,
       required: ['owner', 'name'],
-      properties: { ...OWNER_NAME, hours: HOURS },
+      properties: { ...OWNER_NAME, hours: HOURS, days: DAYS },
     },
   },
   {
-    name: 'start_scan',
-    description: 'Запустить фоновый скан GH Archive для репозитория вне индекса.',
+    name: 'get_repo_history',
+    description:
+      'Анализ любого публичного репозитория по истории GitHub (нужен GITHUB_TOKEN): ' +
+      'дневная история звёзд, форки, issues, PR и коммиты. Проверок по аккаунтам в этом режиме нет.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
       required: ['owner', 'name'],
-      properties: { ...OWNER_NAME, hours: HOURS },
+      properties: { ...OWNER_NAME, days: DAYS },
+    },
+  },
+  {
+    name: 'get_preview',
+    description:
+      'Базовая статистика GitHub без score: звёзды, форки, issues, watchers, ' +
+      'контрибьюторы. Полезно для холодных репозиториев, которых нет в индексе.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['owner', 'name'],
+      properties: { ...OWNER_NAME },
+    },
+  },
+  {
+    name: 'start_scan',
+    description: 'Запустить фоновый скан репозитория вне индекса: GH Archive или историю GitHub.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['owner', 'name'],
+      properties: { ...OWNER_NAME, hours: HOURS, source: SCAN_SOURCE },
     },
   },
   {
@@ -79,12 +124,21 @@ export const TOOLS = [
       additionalProperties: false,
       properties: {
         limit: { type: 'integer', minimum: 1, maximum: 5000, default: 1000 },
+        existing_only: {
+          type: 'boolean',
+          default: true,
+          description: 'Пропускать удалённые или скрытые на GitHub репозитории',
+        },
+        with_score: { type: 'boolean', default: false, description: 'Добавить оценку Star Guard к каждой строке' },
+        max_level: MAX_LEVEL,
       },
     },
   },
   {
     name: 'batch_summaries',
-    description: 'Короткие сводки до 50 репозиториев (только индекс).',
+    description:
+      'Короткие сводки до 50 репозиториев (только индекс). Ответ — массив в порядке запроса; ' +
+      'у каждого элемента свой status: ok | not_indexed | no_data | index_not_ready | error.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
@@ -119,17 +173,27 @@ export function createHandlers(client) {
       const { owner, name } = requireOwnerName(args);
       return client.assess(owner, name, {
         hours: args.hours,
+        days: args.days,
         waitForScan: args.wait_for_scan !== false,
         scanTimeoutMs: args.scan_timeout_ms ?? client.scanTimeoutMs,
       });
     },
     get_repo_report: async (args) => {
       const { owner, name } = requireOwnerName(args);
-      return client.getReport(owner, name, args.hours);
+      return client.getReport(owner, name, args.hours, args.days);
+    },
+    get_repo_history: async (args) => {
+      const { owner, name } = requireOwnerName(args);
+      return client.getRepoHistory(owner, name, args.days);
+    },
+    get_preview: async (args) => {
+      const { owner, name } = requireOwnerName(args);
+      return client.getPreview(owner, name);
     },
     start_scan: async (args) => {
       const { owner, name } = requireOwnerName(args);
-      return client.startScan(owner, name, args.hours);
+      validateEnum(args.source, ['github', 'archive'], 'source');
+      return client.startScan(owner, name, args.hours, args.source);
     },
     get_scan: async (args) => {
       if (typeof args.scan_id !== 'string' || !args.scan_id.trim()) {
@@ -137,7 +201,15 @@ export function createHandlers(client) {
       }
       return client.getScan(args.scan_id);
     },
-    list_indexed_repos: async (args) => client.listIndexedRepos(args.limit ?? 1000),
+    list_indexed_repos: async (args) => {
+      validateEnum(args.max_level, ['low', 'medium', 'high', 'critical'], 'max_level');
+      return client.listIndexedRepos({
+        limit: args.limit ?? 1000,
+        existingOnly: args.existing_only,
+        withScore: args.with_score,
+        maxLevel: args.max_level,
+      });
+    },
     batch_summaries: async (args) => {
       if (!Array.isArray(args.repos) || args.repos.length < 1 || args.repos.length > 50) {
         throw new Error('repos must contain between 1 and 50 "owner/name" strings');
@@ -164,4 +236,10 @@ function requireOwnerName(args) {
     throw new Error('name is required');
   }
   return { owner: args.owner.trim(), name: args.name.trim() };
+}
+
+function validateEnum(value, allowed, field) {
+  if (value !== undefined && !allowed.includes(value)) {
+    throw new Error(`${field} must be one of: ${allowed.join(', ')}`);
+  }
 }

@@ -17,6 +17,19 @@ const apiUrl = process.env.STAR_GUARD_API_URL ?? 'http://localhost:8080';
 const owner = process.env.VERIFY_OWNER ?? 'demo';
 const name = process.env.VERIFY_NAME ?? 'star-guard';
 const hours = Number(process.env.VERIFY_HOURS ?? 3);
+const days = process.env.VERIFY_DAYS ? Number(process.env.VERIFY_DAYS) : undefined;
+
+const EXPECTED_TOOLS = [
+  'assess_dependency',
+  'get_repo_report',
+  'get_repo_history',
+  'get_preview',
+  'start_scan',
+  'get_scan',
+  'list_indexed_repos',
+  'batch_summaries',
+  'get_badge',
+];
 
 const child = spawn(process.execPath, ['src/index.js'], {
   cwd: process.cwd(),
@@ -67,11 +80,15 @@ try {
   console.log(`initialize: ${init.result.serverInfo.name} ${init.result.serverInfo.version}`);
 
   const tools = await request('tools/list');
-  console.log(`tools: ${tools.result.tools.map((tool) => tool.name).join(', ')}`);
+  const toolNames = tools.result.tools.map((tool) => tool.name);
+  console.log(`tools: ${toolNames.join(', ')}`);
+  for (const expected of EXPECTED_TOOLS) {
+    assert.ok(toolNames.includes(expected), `tool ${expected} is not exposed`);
+  }
 
   const call = await request('tools/call', {
     name: 'assess_dependency',
-    arguments: { owner, name, hours },
+    arguments: { owner, name, hours, ...(days == null ? {} : { days }) },
   });
   if (call.result?.isError) {
     throw new Error(`Tool error: ${call.result.content?.[0]?.text}`);
@@ -87,6 +104,48 @@ try {
       .includes(payload.interpretation.category),
   );
   assert.ok(payload.interpretation.recommendation, 'recommendation is missing');
+  if (payload.evidence?.source) {
+    assert.ok(
+      ['gh_archive_index', 'gh_archive', 'github_api'].includes(payload.evidence.source),
+      `unexpected evidence.source: ${payload.evidence.source}`,
+    );
+    console.log(`source: ${payload.evidence.source}`);
+  }
+
+  const batchCall = await request('tools/call', {
+    name: 'batch_summaries',
+    arguments: { repos: [`${owner}/${name}`], hours },
+  });
+  if (batchCall.result?.isError) {
+    throw new Error(`batch_summaries error: ${batchCall.result.content?.[0]?.text}`);
+  }
+  const batch = JSON.parse(batchCall.result.content[0].text);
+  assert.ok(Array.isArray(batch.data), 'batch_summaries must return a JSON array');
+  assert.equal(batch.data.length, 1);
+  console.log(`batch: status=${batch.data[0]?.status}`);
+
+  if (process.env.VERIFY_INDEX === '1') {
+    const indexCall = await request('tools/call', {
+      name: 'list_indexed_repos',
+      arguments: { limit: 5 },
+    });
+    const index = JSON.parse(indexCall.result.content[0].text);
+    assert.ok([200, 503].includes(index.status), `unexpected index status ${index.status}`);
+    console.log(`index: HTTP ${index.status}${index.data?.code ? ` (${index.data.code})` : ''}`);
+  }
+
+  if (process.env.VERIFY_GITHUB === '1') {
+    for (const [tool, args] of [
+      ['get_repo_history', { owner, name, days: days ?? 30 }],
+      ['get_preview', { owner, name }],
+    ]) {
+      const githubCall = await request('tools/call', { name: tool, arguments: args });
+      const result = JSON.parse(githubCall.result.content[0].text);
+      assert.equal(result.status, 200, `${tool} failed: ${result.data?.code ?? result.status}`);
+      console.log(`${tool}: HTTP 200`);
+    }
+  }
+
   console.log('\nOK: MCP → Star Guard → interpretation');
 } finally {
   child.kill();

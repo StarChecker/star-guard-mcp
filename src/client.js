@@ -1,6 +1,15 @@
 import { setTimeout as sleep } from 'node:timers/promises';
 import { interpretReport, interpretScanFailure } from './interpretation.js';
 
+/** Ошибки GitHub-источника, при которых имеет смысл повторить проверку по GH Archive. */
+const GITHUB_FALLBACK_CODES = new Set([
+  'GITHUB_TOKEN_REQUIRED',
+  'GITHUB_TOKEN_INVALID',
+  'GITHUB_RATE_LIMITED',
+  'GITHUB_UNAVAILABLE',
+  'GITHUB_HISTORY_NOT_READY',
+]);
+
 export class StarGuardError extends Error {
   constructor(message, { status = 0, code = 'ERROR', body = null } = {}) {
     super(message);
@@ -32,14 +41,22 @@ export class StarGuardClient {
     this.requestTimeoutMs = requestTimeoutMs;
   }
 
-  async getReport(owner, name, hours) {
-    return this.request(`/api/v1/repos/${seg(owner)}/${seg(name)}${hoursQuery(hours)}`);
+  async getReport(owner, name, hours, days) {
+    return this.request(`/api/v1/repos/${seg(owner)}/${seg(name)}${query({ hours, days })}`);
   }
 
-  async startScan(owner, name, hours) {
+  async getRepoHistory(owner, name, days) {
+    return this.request(`/api/v1/repos/${seg(owner)}/${seg(name)}/history${query({ days })}`);
+  }
+
+  async getPreview(owner, name) {
+    return this.request(`/api/v1/preview/${seg(owner)}/${seg(name)}`);
+  }
+
+  async startScan(owner, name, hours, source) {
     return this.request('/api/v1/scans', {
       method: 'POST',
-      body: { owner, name, ...(hours == null ? {} : { hours }) },
+      body: { owner, name, ...(hours == null ? {} : { hours }), ...(source == null ? {} : { source }) },
     });
   }
 
@@ -47,8 +64,13 @@ export class StarGuardClient {
     return this.request(`/api/v1/scans/${seg(scanId)}`);
   }
 
-  async listIndexedRepos(limit = 1000) {
-    return this.request(`/api/v1/index/repos?limit=${encodeURIComponent(limit)}`);
+  async listIndexedRepos({ limit = 1000, existingOnly, withScore, maxLevel } = {}) {
+    return this.request(`/api/v1/index/repos${query({
+      limit,
+      existing_only: existingOnly,
+      with_score: withScore,
+      max_level: maxLevel,
+    })}`);
   }
 
   async batchSummaries(repos, hours) {
@@ -63,53 +85,57 @@ export class StarGuardClient {
   }
 
   /**
-   * Проверка библиотеки: индекс → мгновенный отчёт; вне индекса → скан и polling.
+   * Проверка библиотеки: индекс/GitHub → мгновенный отчёт; вне индекса → скан и polling.
    */
   async assess(owner, name, {
     hours,
+    days,
     waitForScan = true,
     scanTimeoutMs = this.scanTimeoutMs,
     pollIntervalMs = this.pollIntervalMs,
   } = {}) {
-    const report = await this.getReport(owner, name, hours);
+    const report = await this.getReport(owner, name, hours, days);
     if (report.status === 200) {
       return interpretReport(report.data);
     }
 
     const code = report.data?.code;
+    const scanOptions = { hours, waitForScan, scanTimeoutMs, pollIntervalMs };
     if (code === 'REPO_NOT_INDEXED') {
-      const started = await this.startScan(owner, name, hours);
-      const scanId = started.data?.id ?? started.data?.scan_id ?? null;
-      if (!scanId) {
-        throw new StarGuardError('Star Guard did not return scan id', {
-          status: started.status,
-          code: 'SCAN_START_FAILED',
-          body: started.data,
-        });
-      }
-      if (!waitForScan) {
-        return {
-          status: 'scanning',
-          scan_id: scanId,
-          scan: started.data,
-          message: 'Репозиторий вне индекса. Скан запущен, результат будет доступен позже.',
-        };
-      }
-      return this.waitForScan(scanId, { scanTimeoutMs, pollIntervalMs });
+      return this.startScanAndWait(owner, name, {
+        ...scanOptions,
+        message: 'Репозиторий вне индекса. Скан запущен, результат будет доступен позже.',
+      });
+    }
+
+    if (GITHUB_FALLBACK_CODES.has(code)) {
+      // GitHub-источник недоступен (нет токена, лимит, сбой API) — пробуем GH Archive.
+      return this.startScanAndWait(owner, name, {
+        ...scanOptions,
+        source: 'archive',
+        message: 'GitHub-источник недоступен. Скан GH Archive запущен, результат будет доступен позже.',
+      });
     }
 
     if (code === 'INDEX_NOT_READY') {
       return {
         status: 'index_not_ready',
         code,
-        message: 'Индекс Star Guard ещё прогревается. Попробуйте позже.',
+        message: report.data?.detail ?? 'Индекс Star Guard ещё прогревается. Попробуйте позже.',
       };
     }
     if (code === 'REPO_NOT_FOUND_IN_WINDOW') {
       return {
         status: 'no_data',
         code,
-        message: 'В GH Archive нет событий репозитория за запрошенное окно.',
+        message: report.data?.detail ?? 'В GH Archive нет событий репозитория за запрошенное окно.',
+      };
+    }
+    if (code === 'REPO_NOT_FOUND_ON_GITHUB') {
+      return {
+        status: 'repo_not_found',
+        code,
+        message: report.data?.detail ?? 'Репозиторий удалён или приватный по данным GitHub.',
       };
     }
     return {
@@ -118,6 +144,35 @@ export class StarGuardClient {
       code: code ?? 'HTTP_ERROR',
       message: report.data?.detail ?? 'Star Guard API вернул ошибку',
     };
+  }
+
+  async startScanAndWait(owner, name, {
+    hours,
+    source,
+    waitForScan,
+    scanTimeoutMs,
+    pollIntervalMs,
+    message,
+  }) {
+    const started = await this.startScan(owner, name, hours, source);
+    const scanId = started.data?.id ?? started.data?.scan_id ?? null;
+    if (!scanId) {
+      throw new StarGuardError('Star Guard did not return scan id', {
+        status: started.status,
+        code: 'SCAN_START_FAILED',
+        body: started.data,
+      });
+    }
+    if (!waitForScan) {
+      return {
+        status: 'scanning',
+        scan_id: scanId,
+        source: source ?? null,
+        scan: started.data,
+        message,
+      };
+    }
+    return this.waitForScan(scanId, { scanTimeoutMs, pollIntervalMs });
   }
 
   async waitForScan(scanId, { scanTimeoutMs, pollIntervalMs }) {
@@ -136,7 +191,15 @@ export class StarGuardClient {
         };
       }
       last = response.data;
-      if (last?.status === 'done' && last.report) {
+      if (last?.status === 'done') {
+        if (!last.report) {
+          return {
+            status: 'error',
+            scan_id: scanId,
+            code: 'SCAN_REPORT_MISSING',
+            message: 'Скан завершён, но Star Guard не вернул отчёт.',
+          };
+        }
         return {
           ...interpretReport(last.report),
           scan_id: scanId,
@@ -193,8 +256,15 @@ function seg(value) {
   return encodeURIComponent(String(value).trim());
 }
 
-function hoursQuery(hours) {
-  return hours == null ? '' : `?hours=${encodeURIComponent(hours)}`;
+function query(params) {
+  const search = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value !== undefined && value !== null && value !== '') {
+      search.set(key, String(value));
+    }
+  }
+  const serialized = search.toString();
+  return serialized ? `?${serialized}` : '';
 }
 
 function envNumber(name, fallback) {

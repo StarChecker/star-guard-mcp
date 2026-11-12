@@ -23,15 +23,15 @@ McpServer (src/mcp-server.js)
     │  initialize / tools/list / tools/call / ping / shutdown
     ▼
 Tools (src/tools.js)
-    │  assess_dependency, get_repo_report, start_scan, get_scan,
-    │  list_indexed_repos, batch_summaries, get_badge
+    │  assess_dependency, get_repo_report, get_repo_history, get_preview,
+    │  start_scan, get_scan, list_indexed_repos, batch_summaries, get_badge
     ├──────────────► StarGuardClient (src/client.js)
     │                   │  HTTP
     │                   ▼
     │                Star Guard REST API
-    │                   │  report / scan / index / badges
+    │                   │  report / history / preview / scan / index / badges
     │                   ▼
-    │                GH Archive + scoring
+    │                GH Archive + GitHub API + scoring
     ▼
 Interpretation (src/interpretation.js)
     │  level → category / recommendation
@@ -42,18 +42,24 @@ Interpretation (src/interpretation.js)
 ## Поток `assess_dependency`
 
 ```text
-1. GET /api/v1/repos/{owner}/{name}?hours=N
+1. GET /api/v1/repos/{owner}/{name}?hours=N&days=D
+   (источник выбирает сервер: индекс GH Archive или история GitHub)
 2. 200 → interpretReport(report)
-3. 404 REPO_NOT_INDEXED →
-      POST /api/v1/scans
-      polling GET /api/v1/scans/{id}
+3. 404 REPO_NOT_INDEXED → POST /api/v1/scans → polling GET /api/v1/scans/{id}
       done → interpretReport(report)
       failed → interpretScanFailure
       timeout → status=scanning + scan_id
-4. 404 REPO_NOT_FOUND_IN_WINDOW → status=no_data
-5. 503 INDEX_NOT_READY → status=index_not_ready
-6. сеть/5xx → структурированная ошибка API_UNREACHABLE
+4. 503 GITHUB_* (нет токена/лимит/сбой) →
+      POST /api/v1/scans со source=archive → polling
+5. 404 REPO_NOT_FOUND_IN_WINDOW → status=no_data
+6. 404 REPO_NOT_FOUND_ON_GITHUB → status=repo_not_found
+7. 503 INDEX_NOT_READY → status=index_not_ready
+8. 502 ARCHIVE_UNAVAILABLE / 400 INVALID_REQUEST → status=error + code
+9. сеть/таймаут → структурированная ошибка API_UNREACHABLE
 ```
+
+Статусы скана `queued` и `running` продолжают polling; `done` без `report` —
+`SCAN_REPORT_MISSING`; `404 SCAN_NOT_FOUND` (TTL 30 минут) — `status=error`.
 
 ## Детерминированная трактовка
 
@@ -68,8 +74,10 @@ Interpretation (src/interpretation.js)
 | `insufficient_data` | insufficient_data | insufficient_data |
 
 Причины: `score.verdict` + `checks[].summary` активных проверок, до 5 штук.
-Caveats: `mocked`, `missing_hours`, `parse_errors`, недостаточный confidence.
-Дисклеймер: «Это признаки, а не доказательство накрутки».
+Caveats: `mocked`, `missing_hours`, `parse_errors`, неполное покрытие архива,
+недостаточный confidence; для `source.type=github_api` — предупреждение об
+отсутствии проверок по аккаунтам. `evidence.source` показывает, каким путём
+получена оценка. Дисклеймер: «Это признаки, а не доказательство накрутки».
 
 ## MCP-протокол
 
@@ -95,5 +103,9 @@ Caveats: `mocked`, `missing_hours`, `parse_errors`, недостаточный c
 - `ScanService` в Star Guard хранит задачи in-memory; при нескольких инстансах
   нужен общий store или sticky routing.
 - Cold-скан репозитория вне индекса может занять десятки секунд.
+- Готовый скан живёт в Star Guard 30 минут; после этого `get_scan` вернёт
+  `404 SCAN_NOT_FOUND`, а `assess_dependency` создаст новый скан.
+- `days` у скана не поддерживается: GitHub-скан использует серверное окно
+  `app.github.history.max-days`.
 - MCP не проверяет подлинность данных: он доверяет Star Guard и явно показывает
-  `mocked`/покрытие архива.
+  `mocked`/покрытие архива/источник отчёта.

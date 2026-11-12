@@ -148,9 +148,10 @@ docker run -i --rm \
 
 Аргументы проверяются минимально: `owner`, `name` и `scan_id` — непустые
 строки; `repos` в `batch_summaries` — 1–50 строк вида `owner/name`;
-`limit` и диапазоны `hours` ограничены схемой. Сервер не выполняет полную
-валидацию JSON Schema — некорректные типы отсеиваются обработчиками или самим
-Star Guard.
+`source` (`github|archive`) и `max_level` (`low|medium|high|critical`)
+отсекаются обработчиком с понятной ошибкой; `limit`, `hours` и `days`
+ограничены схемой. Сервер не выполняет полную валидацию JSON Schema —
+некорректные типы отсеиваются обработчиками или самим Star Guard.
 
 Список инструментов и форматы результатов — в [tools.md](tools.md).
 
@@ -171,9 +172,11 @@ Star Guard.
 
 HTTP-статусы Star Guard в `assess_dependency` не выбрасываются как ошибки, а
 преобразуются в структурированный результат: `scanning`, `no_data`,
-`index_not_ready`, `failed`, `error`. Инструменты `get_repo_report`,
-`start_scan`, `get_scan`, `list_indexed_repos`, `batch_summaries`, `get_badge`
-возвращают сырой ответ Star Guard (`{ status, data }`) как есть.
+`index_not_ready`, `repo_not_found`, `failed`, `error`. Инструменты
+`get_repo_report`, `get_repo_history`, `get_preview`, `start_scan`, `get_scan`,
+`list_indexed_repos`, `batch_summaries`, `get_badge` возвращают сырой ответ
+Star Guard (`{ status, data }`) как есть. В `batch_summaries` `data` — массив
+`RepoSummaryDto` в порядке запроса, а не объект с обёрткой.
 
 ## Конфигурация
 
@@ -199,9 +202,11 @@ STAR_GUARD_API_URL=http://localhost:8080 node scripts/verify-integration.mjs
 ```
 
 `verify-integration.mjs` поднимает `src/index.js` по stdio, выполняет
-`initialize`, `tools/list`, `assess_dependency` и проверяет структуру ответа.
-Owner, name и окно переопределяются через `VERIFY_OWNER`, `VERIFY_NAME`,
-`VERIFY_HOURS`.
+`initialize`, `tools/list`, `assess_dependency`, `batch_summaries` и проверяет
+структуру ответа. Owner, name и окно переопределяются через `VERIFY_OWNER`,
+`VERIFY_NAME`, `VERIFY_HOURS`, `VERIFY_DAYS`. Дополнительные проверки:
+`VERIFY_INDEX=1` — `list_indexed_repos` (допускает 503 в fixture-режиме);
+`VERIFY_GITHUB=1` — `get_repo_history` и `get_preview` (нужен `GITHUB_TOKEN`).
 
 Если клиент не видит инструменты, проверьте по порядку:
 
@@ -223,5 +228,6 @@ Owner, name и окно переопределяются через `VERIFY_OWNE
 - `exit` не обрабатывается как команда завершения: сервер игнорирует его и
   продолжает читать stdin.
 - MCP доверяет данным Star Guard и явно показывает caveats (`mocked`,
-  пропущенные часы архива, ошибки разбора). Трактовка детерминированная, без
-  внешних LLM; это признаки, а не доказательство накрутки.
+  пропущенные часы архива, ошибки разбора, источник `github_api` без проверок
+  по аккаунтам). Трактовка детерминированная, без внешних LLM; это признаки, а
+  не доказательство накрутки.

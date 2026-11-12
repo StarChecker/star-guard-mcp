@@ -42,6 +42,7 @@ export function interpretReport(report) {
     }
   }
 
+  const sourceType = report?.source?.type ?? null;
   const caveats = [];
   if (score.mocked) {
     caveats.push('Часть проверок работает в mock-режиме — оценка неполная.');
@@ -49,9 +50,19 @@ export function interpretReport(report) {
   if (insufficient) {
     caveats.push('Недостаточно данных для уверенной оценки.');
   }
+  if (sourceType === 'github_api') {
+    caveats.push('Оценка по истории GitHub: проверки по аккаунтам (свежие аккаунты, пересечение акторов) недоступны.');
+  }
   const missingHours = report?.archive?.missing_hours?.length ?? 0;
   if (missingHours > 0) {
     caveats.push(`В окне отсутствуют ${missingHours} час(ов) GH Archive.`);
+  }
+  const requestedHours = report?.archive?.hours_requested;
+  const loadedHours = report?.archive?.hours_loaded;
+  if (missingHours === 0
+      && Number.isFinite(requestedHours) && requestedHours > 0
+      && Number.isFinite(loadedHours) && loadedHours < requestedHours) {
+    caveats.push(`Загружено ${loadedHours} из ${requestedHours} час(ов) GH Archive — покрытие окна неполное.`);
   }
   const parseErrors = report?.archive?.parse_errors ?? 0;
   if (parseErrors > 0) {
@@ -73,6 +84,7 @@ export function interpretReport(report) {
     evidence: {
       window: report?.window ?? null,
       stats: report?.stats ?? null,
+      source: sourceType,
       checks: checks.map((check) => ({
         id: check.id,
         title: check.title,
