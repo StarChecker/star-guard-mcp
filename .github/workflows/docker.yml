@@ -33,24 +33,29 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Явная проверка вместо подстановки с fallback: если секретов нет,
-      # падаем с понятным сообщением, а не с невнятной ошибкой формата.
-      - name: Check Docker Hub credentials
+      # Секреты, вставленные вместе с переводом строки, ломают имя образа
+      # (`user\n/star-guard-mcp` → невалидный тег `/star-guard-mcp:latest`).
+      # Поэтому username обрезаем и валидируем, а не подставляем как есть.
+      - name: Resolve Docker Hub namespace
+        id: namespace
         if: github.event_name != 'pull_request'
         env:
-          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
-          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+          RAW_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          RAW_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
         run: |
-          missing=0
-          if [ -z "$DOCKERHUB_USERNAME" ]; then
+          username="$(printf '%s' "$RAW_USERNAME" | tr -d '[:space:]')"
+          token="$(printf '%s' "$RAW_TOKEN" | tr -d '[:space:]')"
+          if [ -z "$username" ]; then
             echo "::error::Repository secret DOCKERHUB_USERNAME is not set"
-            missing=1
+            exit 1
           fi
-          if [ -z "$DOCKERHUB_TOKEN" ]; then
+          if [ -z "$token" ]; then
             echo "::error::Repository secret DOCKERHUB_TOKEN is not set"
-            missing=1
+            exit 1
           fi
-          exit "$missing"
+          echo "::add-mask::$token"
+          echo "name=${username,,}" >> "$GITHUB_OUTPUT"
+          echo "token=$token" >> "$GITHUB_OUTPUT"
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
@@ -64,15 +69,15 @@ jobs:
         if: github.event_name != 'pull_request'
         uses: docker/login-action@v3
         with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          username: ${{ steps.namespace.outputs.name }}
+          password: ${{ steps.namespace.outputs.token }}
 
       - name: Docker metadata
         id: meta
         if: github.event_name != 'pull_request'
         uses: docker/metadata-action@v5
         with:
-          images: ${{ secrets.DOCKERHUB_USERNAME }}/star-guard-mcp
+          images: ${{ steps.namespace.outputs.name }}/star-guard-mcp
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
             type=semver,pattern={{version}}
