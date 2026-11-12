@@ -33,13 +33,24 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Имя образа: <dockerhub-user>/star-guard-mcp.
-      # На PR из форка секреты недоступны — берём владельца репозитория,
-      # этого достаточно, потому что PR-сборка не пушится.
-      - name: Resolve image name
+      # Явная проверка вместо подстановки с fallback: если секретов нет,
+      # падаем с понятным сообщением, а не с невнятной ошибкой формата.
+      - name: Check Docker Hub credentials
+        if: github.event_name != 'pull_request'
         env:
-          NAMESPACE: ${{ secrets.DOCKERHUB_USERNAME || github.repository_owner }}
-        run: echo "IMAGE=${NAMESPACE,,}/star-guard-mcp" >> "$GITHUB_ENV"
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          missing=0
+          if [ -z "$DOCKERHUB_USERNAME" ]; then
+            echo "::error::Repository secret DOCKERHUB_USERNAME is not set"
+            missing=1
+          fi
+          if [ -z "$DOCKERHUB_TOKEN" ]; then
+            echo "::error::Repository secret DOCKERHUB_TOKEN is not set"
+            missing=1
+          fi
+          exit "$missing"
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
@@ -58,9 +69,10 @@ jobs:
 
       - name: Docker metadata
         id: meta
+        if: github.event_name != 'pull_request'
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.IMAGE }}
+          images: ${{ secrets.DOCKERHUB_USERNAME }}/star-guard-mcp
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
             type=semver,pattern={{version}}
@@ -71,12 +83,24 @@ jobs:
             org.opencontainers.image.description=MCP server for Star Guard: deterministic suspicious-score interpretation
             org.opencontainers.image.url=https://github.com/${{ github.repository }}
 
-      - name: Build and push
+      - name: Build pull request image
+        if: github.event_name == 'pull_request'
         uses: docker/build-push-action@v6
         with:
           context: .
-          platforms: ${{ github.event_name == 'pull_request' && 'linux/amd64' || 'linux/amd64,linux/arm64' }}
-          push: ${{ github.event_name != 'pull_request' }}
+          platforms: linux/amd64
+          push: false
+          tags: star-guard-mcp:pull-request
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build and push
+        if: github.event_name != 'pull_request'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
